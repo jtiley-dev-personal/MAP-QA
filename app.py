@@ -279,8 +279,8 @@ st.markdown(
     ">
         <h4 style="margin-top:0; color:#111111;">How To Use:</h4>
         <ol style="margin-top:0.3rem; padding-left:1.2rem;">
-            <li>Upload your <b>MAP</b> and <b>Media Plan</b> files in the sidebar on the left.</li>
-            <li>Select the <b>sheets</b> within these documents to be used for comparison.</li>
+            <li>Upload your <b>MAP</b> file & select sheet for comparison</li>
+            <li>Upload your <b>Media Plan</b> file & select sheet for comparison</li>
             <li>Select what <b>levels</b> you would like to compare across the two sheets.</li>
             <li>Select the <b>campaign</b> to be used for comparison — this should match the campaign in your Media Plan.</li>
             <li>Select the <b>columns for comparison</b> in the MAP file. These are auto-populated, but you’ll need to confirm the <b>budget</b> and <b>traffic</b> columns.</li>
@@ -301,18 +301,22 @@ class Mapping:
     budget_col: Optional[str]
     visits_col: Optional[str]
 
-def load_excel(file) -> Optional[pd.ExcelFile]:
-    if not file:
+@st.cache_resource(show_spinner=False)
+def load_excel(file_bytes) -> Optional[pd.ExcelFile]:
+    """Load Excel file into memory once, cache the ExcelFile object."""
+    if not file_bytes:
         return None
     try:
-        return pd.ExcelFile(file)
+        return pd.ExcelFile(file_bytes)
     except Exception as e:
         st.error(f"Failed to read Excel: {e}")
         return None
 
-def read_sheet(xls: pd.ExcelFile, sheet_name: str, header_row: int = 0) -> Optional[pd.DataFrame]:
+@st.cache_data(show_spinner=False)
+def read_sheet_cached(_xls: pd.ExcelFile, sheet_name: str, header_row: int = 0) -> Optional[pd.DataFrame]:
+    """Parse a specific sheet from a cached ExcelFile object."""
     try:
-        df = xls.parse(sheet_name=sheet_name, header=header_row)
+        df = _xls.parse(sheet_name=sheet_name, header=header_row)
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
@@ -536,53 +540,110 @@ def align_and_compare(a: pd.DataFrame, b: pd.DataFrame, level: str) -> pd.DataFr
     ]
     return add_total_row(merged, level)
 
-# ---------------------------------------------------------------------
-# Streamlit Interface
-# ---------------------------------------------------------------------
-st.sidebar.header("1) Upload Files")
-file_a = st.sidebar.file_uploader("MAP File", type=["xlsx", "xls", "xlsm"])
-file_b = st.sidebar.file_uploader("Media Plan File", type=["xlsx", "xls", "xlsm"])
-xls_a, xls_b = load_excel(file_a), load_excel(file_b)
+# ===============================================================
+# 1️⃣ + 2️⃣ MAP & Media Plan Upload (Side-by-Side)
+# ===============================================================
+col1, col2 = st.columns(2)
 
-st.sidebar.header("2) Select Sheets")
-map_sheets = [s for s in (xls_a.sheet_names if xls_a else []) if "demand cr & pr archive" in s.lower()]
-sheet_a = st.sidebar.selectbox("Sheet for MAP File", map_sheets if map_sheets else ["-"], disabled=not xls_a)
-media_sheets = xls_b.sheet_names if xls_b else []
-default_media = next((s for s in media_sheets if s.lower() == "mapexport"), media_sheets[0] if media_sheets else "-")
-sheet_b = st.sidebar.selectbox(
-    "Sheet for Media Plan",
-    media_sheets if media_sheets else ["-"],
-    index=media_sheets.index(default_media) if media_sheets else 0,
-    disabled=not xls_b,
-)
+with col1:
+    st.markdown("### 1) MAP File Upload")
+    file_a = st.file_uploader("Upload your **MAP File** (.xlsx, .xls, .xlsm)", type=["xlsx", "xls", "xlsm"], key="map_upload")
 
-df_a = read_sheet(xls_a, sheet_a, 0) if xls_a else None
-df_b = read_sheet(xls_b, sheet_b, 1) if xls_b else None
+    xls_a, map_sheets, sheet_a, df_a = None, [], "-", None
+    if file_a:
+        try:
+            xls_a = load_excel(file_a)
+            map_sheets = [
+                s for s in xls_a.sheet_names
+                if "demand cr & pr archive" in s.lower() or "map" in s.lower()
+            ] or xls_a.sheet_names
+            sheet_a = st.selectbox("Select MAP Sheet", map_sheets, key="sheet_a")
+            df_a = read_sheet_cached(xls_a, sheet_a, 0)
+            if df_a is not None:
+                st.success(f"✅ MAP File loaded: **{sheet_a}** ({len(df_a):,} rows)")
+        except Exception as e:
+            st.error(f"Failed to read MAP file: {e}")
+    else:
+        st.info("Please upload your MAP file to continue.")
 
-if df_a is not None:
-    st.caption(f"MAP File: Loaded **{sheet_a}** with {len(df_a):,} rows and {len(df_a.columns)} columns.")
-if df_b is not None:
-    st.caption(f"Media Plan: Loaded **{sheet_b}** with {len(df_b):,} rows and {len(df_b.columns)} columns.")
+with col2:
+    st.markdown("### 2) Media Plan Upload")
+    file_b = st.file_uploader("Upload your **Media Plan File** (.xlsx, .xls, .xlsm)", type=["xlsx", "xls", "xlsm"], key="media_upload")
 
-# Campaign filter (multi-select) — always visible
-st.subheader("4) Select Campaign(s)")
-if df_a is not None and "Campaign" in df_a.columns:
-    campaigns = sorted(df_a["Campaign"].dropna().astype(str).unique())
-    selected = st.multiselect("Choose one or more campaigns", campaigns, placeholder="Select one or more campaigns...")
-    if selected:
-        df_a = df_a[df_a["Campaign"].astype(str).isin(selected)]
-        st.success(f"Filtered to {len(selected)} campaign(s): {', '.join(selected)}  \nRows retained: {len(df_a):,}")
-else:
-    st.multiselect("Choose one or more campaigns", [], placeholder="Upload a MAP file to enable campaign selection...", disabled=True)
+    xls_b, media_sheets, sheet_b, df_b = None, [], "-", None
+    if file_b:
+        try:
+            xls_b = load_excel(file_b)
+            all_sheets = xls_b.sheet_names
+            media_sheets = [
+                s for s in all_sheets
+                if any(k in s.lower() for k in ["mapexport", "plan", "media"])
+            ] or all_sheets
+            default_media = (
+                next((s for s in media_sheets if "mapexport" in s.lower()), None)
+                or media_sheets[0]
+            )
+            sheet_b = st.selectbox(
+                "Select Media Plan Sheet",
+                media_sheets,
+                index=media_sheets.index(default_media) if default_media in media_sheets else 0,
+                key="sheet_b",
+            )
+            df_b = read_sheet_cached(xls_b, sheet_b, 1)
+            if df_b is not None:
+                st.success(f"✅ Media Plan loaded: **{sheet_b}** ({len(df_b):,} rows)")
+        except Exception as e:
+            st.error(f"Failed to read Media Plan file: {e}")
+    else:
+        st.info("Please upload your Media Plan file to continue.")
 
-# Comparison settings
-st.sidebar.header("3) Comparison Settings")
-levels = st.sidebar.multiselect("Levels to compare", ["Markets", "Channel", "Partners"],
-                                default=["Markets", "Channel", "Partners"])
+# ===============================================================
+# 3️⃣ + 4️⃣ Comparison Settings & Campaign Selection (Always Visible)
+# ===============================================================
+st.markdown("---")
+col3, col4 = st.columns(2)
 
-# Build mapping UIs with auto-select + cross-file mirroring and restored order
-map_a = build_mapping_ui("5) MAP File", df_a)
-map_b = build_mapping_ui("6) Media Plan", df_b, ref_mapping=map_a)
+with col3:
+    st.markdown("### 3) Comparison Settings")
+    levels = st.multiselect(
+        "Choose levels to compare",
+        ["Markets", "Channel", "Partners"],
+        default=["Markets", "Channel", "Partners"],
+        key="levels_select",
+    )
+
+with col4:
+    st.markdown("### 4) Select Campaign(s)")
+    if df_a is not None and "Campaign" in df_a.columns:
+        campaigns = sorted(df_a["Campaign"].dropna().astype(str).unique())
+        selected = st.multiselect(
+            "Choose one or more campaigns",
+            campaigns,
+            placeholder="Select campaigns..."
+        )
+        if selected:
+            df_a = df_a[df_a["Campaign"].astype(str).isin(selected)]
+    else:
+        st.multiselect(
+            "Choose one or more campaigns",
+            [],
+            placeholder="Upload a MAP file to enable campaign selection...",
+            disabled=True
+        )
+
+
+# ===============================================================
+# 5️⃣ & 6️⃣ Column Mapping (Side-by-Side)
+# ===============================================================
+st.markdown("---")
+
+col5, col6 = st.columns(2)
+
+with col5:
+    map_a = build_mapping_ui("5) MAP Column Selection", df_a)
+
+with col6:
+    map_b = build_mapping_ui("6) Media Plan Column Selection", df_b, ref_mapping=map_a)
 
 # ---------------------------------------------------------------------
 # Run comparison
