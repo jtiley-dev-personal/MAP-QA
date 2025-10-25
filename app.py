@@ -70,7 +70,7 @@ st.markdown("""
 
     /* ======= EXTENDED NAVBAR ======= */
     header[data-testid="stHeader"] {
-        background-color: #eeeeee !important;
+        background-color: #000000 !important;
         color: #E0E0E0 !important;
         position: fixed !important;
         top: 0;
@@ -86,7 +86,7 @@ st.markdown("""
         left: 50%;
         top: 50%;
         transform: translate(-50%, -50%);
-        color: #000000 !important;
+        color: #ffffff !important;
         font-weight: 600 !important;
         font-size: 1.15rem !important;
         letter-spacing: 0.5px;
